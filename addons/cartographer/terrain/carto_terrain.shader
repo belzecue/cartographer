@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode skip_vertex_transform,blend_mix,depth_draw_opaque,cull_disabled,diffuse_burley,specular_schlick_ggx;
+render_mode skip_vertex_transform,blend_mix,depth_draw_opaque,cull_back,diffuse_burley,specular_schlick_ggx;
 
 const float MESH_STRIDE = 16.0;
 const int NUM_LAYERS = 16;
@@ -151,8 +151,10 @@ void vertex() {
 	
 	VERTEX = position;
 	// Experimenting with displacement
-//	float disp = get_displacement(UV2, UV3D, triplanar_blend) - 0.15;
-//	VERTEX += normal * disp * 0.3;
+//	if (INSTANCE_ID == 0) {
+//		float disp = get_displacement(UV2, UV3D, triplanar_blend) - 0.15;
+//		VERTEX += normal * disp * 0.3;
+//	}
 	VERTEX = (MODELVIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	
 	NORMAL = normal;
@@ -192,24 +194,49 @@ vec4 blend_terrain(vec4 wg1, vec4 wg2, vec4 wg3, vec4 wg4, float wt, vec3 uv3d, 
 						wg3.r, wg3.g, wg3.b, wg3.a,
 						wg4.r, wg4.g, wg4.b, wg4.a};
 	
+	// EXPERIMENTAL mask blending
+	float w_adj = 0.0;
+	vec4 alb_arr[16];
+	for (int lyr = 0; lyr < weights.length(); lyr++) {
+		uint flg = uint(pow(2.0, float(lyr)));
+		vec4 a;
+		
+		if ((flg & uv1_triplanar) > uint(0)) {
+			a = texture_triplanar(albedo_textures, uv3d, float(lyr), tri_blend);
+		}
+		else {
+			a = texture(albedo_textures, vec3(uv3d.xz, float(lyr)));
+		}
+		
+		float adj = weights[lyr] * a.a * 16.0;
+		weights[lyr] += adj + adj/16.0;
+		w_adj += adj/16.0;
+		alb_arr[lyr] = a;
+	}
+	
 	for (int lyr = 0; lyr < weights.length(); lyr++) {
 		float w = weights[lyr];
 		uint flg = uint(pow(2.0, float(lyr)));
 		vec4 a, o, n;
 		
 		if ((flg & uv1_triplanar) > uint(0)) {
-			a = texture_triplanar(albedo_textures, uv3d, float(lyr), tri_blend);
+//			a = texture_triplanar(albedo_textures, uv3d, float(lyr), tri_blend);
+			a = alb_arr[lyr];
 			o = texture_triplanar(orm_textures, uv3d, float(lyr), tri_blend);
 			n = texture_triplanar(normal_textures, uv3d, float(lyr), tri_blend);
 		}
 		else {
-			a = texture(albedo_textures, vec3(uv3d.xz, float(lyr)));
+//			a = texture(albedo_textures, vec3(uv3d.xz, float(lyr)));
+			a = alb_arr[lyr];
 			o = texture(orm_textures, vec3(uv3d.xz, float(lyr)));
 			n = texture(normal_textures, vec3(uv3d.xz, float(lyr)));
 		}
 		
-		w = w * (w < 2.0 ? a.a * 2.0 : 1.0);
+		// EXPERIMENTAL mask blending
+		w = w * (w < 2.0 ? a.a * 2.0 : 2.0);
 //		w = w < 0.1 ? w : (w < 2.0 ? a.a * 2.0 : w);
+//		w -= w_adj / 16.0;
+		
 		alb += a * w;
 		orm += o * w;
 		nrm += (flg & normal_enabled) > uint(0) ? n * w : vec4(0.5, 0.5, 0, 0) * w;
@@ -234,9 +261,16 @@ void fragment() {
 	// Use the weights to blend the layers of the various texture arrays
 	vec4 clr = blend_terrain(wg1, wg2, wg3, wg4, wt, UV3D, triplanar_blend, orm, nmp);
 	
-	//	ALBEDO = (CAMERA_MATRIX * (vec4(NORMAL, 0.0))).rgb;
 //	NORMAL = (vec4(calc_normal(UV2, 1.0 / 1024.0), 1) * CAMERA_MATRIX).xyz;
-	ALBEDO = (clr.rgb + giz.rgb);
+	
+	//NOTE: Get adjacent heights stored in the heightmap, to calc normal
+//	vec4 h = texture(heightmap, UV2);
+//	vec3 n = normalize(vec3(h.x - h.y, 0.002, h.x - h.z));
+//	ALBEDO = n;
+//	NORMAL = (vec4(n.xyz, 1) * CAMERA_MATRIX).xyz;
+//	NORMAL = (vec4(calc_normal(UV2, 1.0 / 2048.0), 1) * CAMERA_MATRIX).xyz;
+	
+	ALBEDO = clr.rgb + giz.rgb;
 	NORMALMAP = nmp.xyz;
 	NORMALMAP_DEPTH = normal_scale;
 	AO = orm.r;
